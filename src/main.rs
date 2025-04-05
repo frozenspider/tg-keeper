@@ -47,7 +47,9 @@ async fn main() -> Result<()> {
     // Sign in if needed
     if !client.is_authorized().await? {
         info!("Not logged in, sending code request...");
-        let phone = input("Enter your phone number: ")?;
+        let phone: String = settings.get("tg_phone")
+            .context("tg_phone not found in config.toml")?;
+        info!("Using phone number from config: {}", phone);
         let token = client.request_login_code(&phone).await?;
         let code = input("Enter the code you received: ")?;
         

@@ -2,3 +2,6 @@
 # You can obtain these at https://my.telegram.org/apps
 tg_api_id = 123456  # Replace with your API ID
 tg_api_hash = "0123456789abcdef0123456789abcdef" # Replace with your API hash
+
+# Your phone number in international format (e.g. "+1234567890")
+tg_phone = "+1234567890"
