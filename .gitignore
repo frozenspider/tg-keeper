@@ -5,8 +5,15 @@
 *.iml
 .idea/
 
+# VS Code
+.vscode
+
 # Rust/Cargo
 /target
 
 # Generated
 *.log
+
+# Secrets
+*.session
+config.toml
