@@ -4,7 +4,6 @@ use grammers_client::grammers_tl_types::{self as tl, Serializable};
 use rusqlite::{params, types::Null, Connection};
 use std::path::Path;
 
-const DB_FILE: &str = "tg-keeper.db";
 
 pub struct Database {
     conn: Connection,
@@ -17,8 +16,8 @@ const SQL_INSERT: &str =
     "INSERT INTO events (chat_id, message_id, date, is_edited, type, serialized) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
 impl Database {
-    pub fn new() -> Result<Self> {
-        let conn = Connection::open(DB_FILE).context("Failed to open database connection")?;
+    pub fn new(db_file: &Path) -> Result<Self> {
+        let conn = Connection::open(db_file).context("Failed to open database connection")?;
 
         // Create tables if they don't exist
         conn.execute(
@@ -77,13 +76,4 @@ impl Database {
         tx.commit()?;
         Ok(())
     }
-}
-
-pub fn ensure_db_exists() -> Result<()> {
-    if !Path::new(DB_FILE).exists() {
-        log::info!("Creating new database at {}", DB_FILE);
-        // Just opening the connection will create the file
-        let _db = Database::new()?;
-    }
-    Ok(())
 }

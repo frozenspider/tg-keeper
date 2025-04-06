@@ -12,7 +12,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const SESSION_FILE: &str = "tg-keeper.session";
-const MEDIA_DIR: &str = "media";
+
+const DATA_DIR: &str = "data";
+const MEDIA_SUBDIR: &str = "media";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,11 +23,12 @@ async fn main() -> Result<()> {
         env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
     );
 
-    // Create media directory if it doesn't exist
-    ensure_media_dir_exists()?;
+    let data_path = Path::new(DATA_DIR);
+    let media_path = data_path.join(MEDIA_SUBDIR);
+    fs::create_dir_all(&media_path)?;
+    let database_file = data_path.join("tg-keeper.db");
 
-    db::ensure_db_exists()?;
-    let mut database = db::Database::new()?;
+    let mut database = db::Database::new(&database_file)?;
 
     // Load configuration
     let config_path = PathBuf::from("config.toml");
@@ -99,7 +102,7 @@ async fn main() -> Result<()> {
                 log::info!("New message: {:?}", wrapper);
                 database.save_message(&wrapper.message, false)?;
 
-                if let Err(e) = try_download_media_raw(&wrapper.message, &client).await {
+                if let Err(e) = try_download_media_raw(&media_path, &wrapper.message, &client).await {
                     log::error!("Failed to download media: {}", e)
                 }
             }
@@ -107,7 +110,7 @@ async fn main() -> Result<()> {
                 log::info!("Message edited: {:?}", wrapper);
                 database.save_message(&wrapper.message, true)?;
 
-                if let Err(e) = try_download_media_raw(&wrapper.message, &client).await {
+                if let Err(e) = try_download_media_raw(&media_path, &wrapper.message, &client).await {
                     log::error!("Failed to download media: {}", e)
                 }
             }
@@ -132,18 +135,9 @@ fn input(message: &str) -> Result<String> {
     Ok(line.trim().to_string())
 }
 
-// Ensure media directory exists
-fn ensure_media_dir_exists() -> Result<()> {
-    let media_path = Path::new(MEDIA_DIR);
-    if !media_path.exists() {
-        log::info!("Creating media directory at {}", media_path.display());
-        fs::create_dir_all(media_path)?;
-    }
-    Ok(())
-}
-
-// Download media from raw message with the correct extension
+/// Download media from raw message with the correct extension
 async fn try_download_media_raw(
+    media_path: &Path,
     raw_message: &tl::enums::Message,
     client: &Client,
 ) -> Result<Option<PathBuf>> {
@@ -197,7 +191,7 @@ async fn try_download_media_raw(
     let chat_name = format!("chat_{chat_id}");
 
     // Create filename with date, chat name, message ID, and correct extension
-    let file_path = Path::new(MEDIA_DIR).join(&chat_name).join(&file_name);
+    let file_path = media_path.join(&chat_name).join(&file_name);
     fs::create_dir_all(file_path.parent().unwrap())?;
     log::info!("Attempting to download media to: {}", file_path.display());
     if file_path.exists() {
