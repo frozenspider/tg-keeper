@@ -10,6 +10,9 @@ use grammers_client::{Client, Config, InitParams};
 use grammers_session::Session;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::time::Instant;
 
 const SESSION_FILE: &str = "tg-keeper.session";
 
@@ -22,6 +25,16 @@ async fn main() -> Result<()> {
     env_logger::init_from_env(
         env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
     );
+
+    let interrupted = Arc::new(AtomicBool::new(false));
+
+    {
+        let interrupted = interrupted.clone();
+        ctrlc::set_handler(move || {
+            log::info!("Received Ctrl+C, stopping...");
+            interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
+        })?;
+    }
 
     let data_path = Path::new(DATA_DIR);
     let media_path = data_path.join(MEDIA_SUBDIR);
@@ -95,7 +108,8 @@ async fn main() -> Result<()> {
 
     // Start watching for updates
     log::info!("Watching for updates...");
-    loop {
+    let mut session_save_time = Instant::now();
+    while !interrupted.load(std::sync::atomic::Ordering::SeqCst) {
         let (update, chats) = client.next_raw_update().await?;
         database.update_chats(&chats)?;
 
@@ -126,7 +140,16 @@ async fn main() -> Result<()> {
                 log::debug!("Unhandled raw update: {:?}", update);
             }
         }
+
+        // Save the session every 30 seconds
+        if session_save_time.elapsed().as_secs() > 30 {
+            client.session().save_to_file(SESSION_FILE)?;
+            session_save_time = Instant::now();
+        }
     }
+
+    client.session().save_to_file(SESSION_FILE)?;
+    Ok(())
 }
 
 // Helper function to get user input
