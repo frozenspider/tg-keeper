@@ -5,7 +5,7 @@ use crate::utils::*;
 use anyhow::{Context, Result};
 use config::Config as AppConfig;
 use grammers_client::grammers_tl_types as tl;
-use grammers_client::types::{Downloadable, Media};
+use grammers_client::types::Media;
 use grammers_client::{Client, Config, InitParams};
 use grammers_session::Session;
 use std::fs;
@@ -96,7 +96,9 @@ async fn main() -> Result<()> {
     // Start watching for updates
     log::info!("Watching for updates...");
     loop {
-        let (update, _chats) = client.next_raw_update().await?;
+        let (update, chats) = client.next_raw_update().await?;
+        database.update_chats(&chats)?;
+
         match update {
             tl::enums::Update::NewMessage(wrapper) => {
                 log::info!("New message: {:?}", wrapper);

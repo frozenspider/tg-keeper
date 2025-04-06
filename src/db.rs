@@ -1,12 +1,14 @@
 use crate::utils::*;
 use anyhow::{Context, Result};
-use grammers_client::grammers_tl_types::{self as tl, Serializable};
+use grammers_client::grammers_tl_types::{self as tl, Deserializable, Serializable};
+use grammers_client::{types, ChatMap};
 use rusqlite::{params, types::Null, Connection};
+use std::collections::HashMap;
 use std::path::Path;
-
 
 pub struct Database {
     conn: Connection,
+    chats: HashMap<i64, (types::Chat, Vec<u8>)>,
 }
 
 const TYPE_MESSAGE: &str = "message";
@@ -34,7 +36,40 @@ impl Database {
         )
         .context("Failed to create events table")?;
 
-        Ok(Database { conn })
+        // Create chats table if it doesn't exist
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS chats (
+                chat_id INTEGER PRIMARY KEY,
+                serialized BLOB NOT NULL
+            )",
+            [],
+        )
+        .context("Failed to create chats table")?;
+
+        // Load chats from database
+        let mut chats = HashMap::new();
+        let mut stmt = conn
+            .prepare("SELECT chat_id, serialized FROM chats")
+            .context("Failed to prepare query for loading chats")?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                let chat_id: i64 = row.get(0)?;
+                let serialized: Vec<u8> = row.get(1)?;
+                Ok((chat_id, serialized))
+            })
+            .context("Failed to execute query for loading chats")?;
+
+        for row in rows {
+            let (chat_id, serialized) = row.context("Failed to get chat row")?;
+            let chat = deserialize_chat(&serialized).context("Failed to deserialize chat")?;
+            chats.insert(chat_id, (chat, serialized));
+        }
+        drop(stmt);
+
+        log::info!("Loaded {} chats from database", chats.len());
+
+        Ok(Database { conn, chats })
     }
 
     pub fn save_message(
@@ -75,5 +110,82 @@ impl Database {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Update the cached chats with new chat data
+    pub fn update_chats(&mut self, chat_map: &ChatMap) -> Result<()> {
+        let mut updated_ctr = 0;
+
+        for chat in chat_map.iter_chats() {
+            let chat_id = chat.id();
+            let serialized = serialize_chat(chat);
+
+            // Only update if the chat is new or different from what we have
+            let should_update = self
+                .chats
+                .get(&chat_id)
+                .is_none_or(|(_, existing_serialized)| existing_serialized != &serialized);
+
+            if should_update {
+                log::debug!("Updating chat {}", chat_id);
+                self.chats
+                    .insert(chat_id, (chat.clone(), serialized.clone()));
+
+                // Also update in database
+                self.conn
+                    .execute(
+                        "INSERT OR REPLACE INTO chats (chat_id, serialized) VALUES (?1, ?2)",
+                        params![chat_id, serialized],
+                    )
+                    .context("Failed to update chat in database")?;
+
+                updated_ctr += 1;
+            }
+        }
+
+        if updated_ctr > 0 {
+            log::info!("Updated {updated_ctr} chats in cache");
+        }
+
+        Ok(())
+    }
+}
+
+fn serialize_chat(chat: &types::Chat) -> Vec<u8> {
+    let mut vec = Vec::with_capacity(1024);
+    // Serialize the chat type as first byte
+    vec.push(match chat {
+        types::Chat::User(_) => 0,
+        types::Chat::Group(_) => 1,
+        types::Chat::Channel(_) => 2,
+    });
+    match chat {
+        types::Chat::User(user) => user.raw.serialize(&mut vec),
+        types::Chat::Group(group) => group.raw.serialize(&mut vec),
+        types::Chat::Channel(channel) => channel.raw.serialize(&mut vec),
+    }
+    vec
+}
+
+fn deserialize_chat(serialized: &[u8]) -> Result<types::Chat> {
+    // Check the first byte to determine the type of chat
+    let chat_type = serialized[0];
+    let serialized = &serialized[1..]; // Skip the first byte
+
+    // Deserialize the chat based on its type
+    match chat_type {
+        0 => {
+            let user = tl::enums::User::from_bytes(serialized)?;
+            Ok(types::Chat::User(types::chat::User { raw: user }))
+        }
+        1 => {
+            let chat = tl::enums::Chat::from_bytes(serialized)?;
+            Ok(types::Chat::Group(types::chat::Group { raw: chat }))
+        }
+        2 => {
+            let channel = tl::types::Channel::from_bytes(serialized)?;
+            Ok(types::Chat::Channel(types::chat::Channel { raw: channel }))
+        }
+        _ => unreachable!("Unknown chat type: {}", chat_type),
     }
 }
