@@ -85,13 +85,13 @@ async fn main() -> Result<()> {
             .context("tg_phone not found in config.toml")?;
         log::info!("Using phone number from config: {}", phone);
         let token = client.request_login_code(&phone).await?;
-        let code = input("Enter the code you received: ")?;
+        let code = rpassword::prompt_password("Enter the code you received: ")?;
 
         let user = match client.sign_in(&token, &code).await {
             Ok(user) => user,
             Err(grammers_client::client::auth::SignInError::PasswordRequired(password_token)) => {
                 log::info!("2FA is required");
-                let password = input("Enter your 2FA password: ")?;
+                let password = rpassword::prompt_password("Enter your 2FA password: ")?;
                 client.check_password(password_token, password).await?
             }
             Err(e) => return Err(e.into()),
@@ -150,16 +150,6 @@ async fn main() -> Result<()> {
 
     client.session().save_to_file(SESSION_FILE)?;
     Ok(())
-}
-
-// Helper function to get user input
-fn input(message: &str) -> Result<String> {
-    use std::io::Write;
-    print!("{}", message);
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    Ok(line.trim().to_string())
 }
 
 /// Download media from raw message with the correct extension
