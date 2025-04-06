@@ -4,8 +4,8 @@ mod utils;
 use crate::utils::*;
 use anyhow::{Context, Result};
 use config::Config as AppConfig;
-use grammers_client::grammers_tl_types as tl;
 use grammers_client::types::Media;
+use grammers_client::{grammers_tl_types as tl, ChatMap};
 use grammers_client::{Client, Config, InitParams};
 use grammers_session::Session;
 use std::fs;
@@ -101,7 +101,7 @@ async fn main() -> Result<()> {
 
         match update {
             tl::enums::Update::NewMessage(wrapper) => {
-                log::info!("New message: {:?}", wrapper);
+                log::info!("New message: {}", to_pretty_summary(&wrapper.message, &chats));
                 database.save_message(&wrapper.message, false)?;
 
                 if let Err(e) = try_download_media_raw(&media_path, &wrapper.message, &client).await
@@ -110,7 +110,7 @@ async fn main() -> Result<()> {
                 }
             }
             tl::enums::Update::EditMessage(wrapper) => {
-                log::info!("Message edited: {:?}", wrapper);
+                log::info!("Message edited: {}", to_pretty_summary(&wrapper.message, &chats));
                 database.save_message(&wrapper.message, true)?;
 
                 if let Err(e) = try_download_media_raw(&media_path, &wrapper.message, &client).await
@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
                 }
             }
             tl::enums::Update::DeleteMessages(wrapper) => {
-                log::info!("Message(s) deleted: {:?}", wrapper);
+                log::info!("Message(s) deleted: {:?}", wrapper.messages);
                 database.save_messages_deleted(&wrapper.messages)?;
             }
             _ => {
@@ -210,4 +210,66 @@ async fn try_download_media_raw(
     client.download_media(&media, &file_path).await?;
     log::info!("Successfully downloaded media to: {}", file_path.display());
     Ok(Some(file_path))
+}
+
+fn to_pretty_summary(msg: &tl::enums::Message, chat_map: &ChatMap) -> String {
+    // Extract chat ID
+    let chat_id = match msg.chat_id() {
+        Some(id) => id,
+        None => return "[Unknown chat]: <no message data>".to_string(),
+    };
+
+    // Get message text or description
+    let (peer, message_text) = match msg {
+        tl::enums::Message::Message(m) => {
+            let peer = chat_map.get(&m.peer_id);
+            let text = if !m.message.is_empty() {
+                m.message.clone()
+            } else {
+                match &m.media {
+                    Some(media) => format!("<{}>", describe_media(media)),
+                    None => "<empty message>".to_owned(),
+                }
+            };
+            (peer, text)
+        }
+        tl::enums::Message::Service(m) => {
+            let peer = chat_map.get(&m.peer_id);
+            (peer, format!("<service: {:?}>", m.action))
+        }
+        tl::enums::Message::Empty(_) => (None, "<empty>".to_owned()),
+    };
+
+    let chat_name = peer.and_then(|c| c.name()).unwrap_or("<no name>");
+    let mut lines = message_text.trim().lines();
+    let mut first_line = lines.next().map(|s| s.trim().to_owned()).unwrap_or("<no message>".to_owned());
+    if lines.next().is_some() {
+        first_line.push_str(" ...");
+    }
+
+    // Format the summary for text messages
+    format!("{chat_name} (#{chat_id}): {first_line}")
+}
+
+/// Helper function to describe media type
+fn describe_media(media: &tl::enums::MessageMedia) -> &'static str {
+    match media {
+        tl::enums::MessageMedia::Photo(_) => "photo",
+        tl::enums::MessageMedia::Document(_) => "document",
+        tl::enums::MessageMedia::Geo(_) => "geo",
+        tl::enums::MessageMedia::Contact(_) => "contact",
+        tl::enums::MessageMedia::Unsupported => "unsupported",
+        tl::enums::MessageMedia::WebPage(_) => "webpage",
+        tl::enums::MessageMedia::Venue(_) => "venue",
+        tl::enums::MessageMedia::Game(_) => "game",
+        tl::enums::MessageMedia::Invoice(_) => "invoice",
+        tl::enums::MessageMedia::GeoLive(_) => "geo live",
+        tl::enums::MessageMedia::Poll(_) => "poll",
+        tl::enums::MessageMedia::Dice(_) => "dice",
+        tl::enums::MessageMedia::Empty => "empty",
+        tl::enums::MessageMedia::Story(_) => "story",
+        tl::enums::MessageMedia::Giveaway(_) => "giveaway",
+        tl::enums::MessageMedia::GiveawayResults(_) => "giveaway results",
+        tl::enums::MessageMedia::PaidMedia(_) => "paid media",
+    }
 }
