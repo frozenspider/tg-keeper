@@ -15,6 +15,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const SESSION_FILE: &str = "tg-keeper.session";
+const CONFIG_FILE: &str = "config.toml";
+const CONFIG_EXAMPLE_FILE: &str = "config.example.toml";
+const DB_FILE: &str = "tg-keeper.sqlite";
 
 const DATA_DIR: &str = "data";
 const MEDIA_SUBDIR: &str = "media";
@@ -39,28 +42,31 @@ async fn main() -> Result<()> {
     let data_path = Path::new(DATA_DIR);
     let media_path = data_path.join(MEDIA_SUBDIR);
     fs::create_dir_all(&media_path)?;
-    let database_file = data_path.join("tg-keeper.db");
+    let database_file = data_path.join(DB_FILE);
 
     let mut database = db::Database::new(&database_file)?;
 
     // Load configuration
-    let config_path = PathBuf::from("config.toml");
+    let config_path = PathBuf::from(CONFIG_FILE);
     if !config_path.exists() {
-        return Err(anyhow::anyhow!("config.toml not found. Please copy config.example.toml to config.toml and fill in your credentials."));
+        return Err(anyhow::anyhow!("{CONFIG_FILE} not found. Please copy {CONFIG_EXAMPLE_FILE} to {CONFIG_FILE} and fill in your credentials."));
     }
 
     let settings = AppConfig::builder()
         .add_source(config::File::from(config_path))
         .build()
-        .context("Failed to load config.toml")?;
+        .context("Failed to load config file")?;
 
     // Get API credentials from config
     let api_id: i32 = settings
         .get("tg_api_id")
-        .context("tg_api_id not found in config.toml")?;
+        .context("tg_api_id not found in config")?;
     let api_hash: String = settings
         .get("tg_api_hash")
-        .context("tg_api_hash not found in config.toml")?;
+        .context("tg_api_hash not found in config")?;
+    let phone: String = settings
+        .get("tg_phone")
+        .context("tg_phone not found in config.toml")?;
 
     // Create client configuration
     let config = Config {
@@ -80,9 +86,6 @@ async fn main() -> Result<()> {
     // Sign in if needed
     if !client.is_authorized().await? {
         log::info!("Not logged in, sending code request...");
-        let phone: String = settings
-            .get("tg_phone")
-            .context("tg_phone not found in config.toml")?;
         log::info!("Using phone number from config: {}", phone);
         let token = client.request_login_code(&phone).await?;
         let code = rpassword::prompt_password("Enter the code you received: ")?;
@@ -100,7 +103,7 @@ async fn main() -> Result<()> {
         if name.is_empty() {
             name.push_str("<unnamed>");
         };
-        log::info!("Logged in successfully as {name}!");
+        log::info!("Logged in successfully as {name}");
 
         // Save the session after successful authentication
         client.session().save_to_file(SESSION_FILE)?;
