@@ -65,20 +65,22 @@ async fn main() -> Result<()> {
         let token = client.request_login_code(&phone).await?;
         let code = input("Enter the code you received: ")?;
 
-        let _user = match client.sign_in(&token, &code).await {
+        let user = match client.sign_in(&token, &code).await {
             Ok(user) => {
-                info!("Logged in successfully as {}!", user.first_name());
                 user
             }
             Err(grammers_client::client::auth::SignInError::PasswordRequired(password_token)) => {
                 info!("2FA is required");
                 let password = input("Enter your 2FA password: ")?;
-                let user = client.check_password(password_token, password).await?;
-                info!("Logged in successfully as {}!", user.first_name());
-                user
+                client.check_password(password_token, password).await?
             }
             Err(e) => return Err(e.into()),
         };
+        let mut name = user.full_name();
+        if name.is_empty() {
+            name.push_str("<unnamed>");
+        };
+        info!("Logged in successfully as {name}!");
 
         // Save the session after successful authentication
         client.session().save_to_file(SESSION_FILE)?;

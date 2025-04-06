@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-grammers-client = "0.7"
-grammers-session = "0.7"
+grammers-client = { git = "https://github.com/Lonami/grammers" }
+grammers-session = { git = "https://github.com/Lonami/grammers" }
 tokio = { version = "1.44", features = ["full"] }
 anyhow = "1.0"
 env_logger = "0.10"
