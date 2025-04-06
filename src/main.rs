@@ -1,11 +1,13 @@
+mod db;
+mod utils;
+
+use crate::utils::*;
 use anyhow::{Context, Result};
-use chrono::Local;
 use config::Config as AppConfig;
 use grammers_client::grammers_tl_types as tl;
 use grammers_client::types::Media;
 use grammers_client::{Client, Config, InitParams};
 use grammers_session::Session;
-use log::{error, info, warn};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -21,6 +23,9 @@ async fn main() -> Result<()> {
 
     // Create media directory if it doesn't exist
     ensure_media_dir_exists()?;
+
+    db::ensure_db_exists()?;
+    let mut database = db::Database::new()?;
 
     // Load configuration
     let config_path = PathBuf::from("config.toml");
@@ -54,22 +59,22 @@ async fn main() -> Result<()> {
 
     // Create and connect client
     let client = Client::connect(config).await?;
-    info!("Connected to Telegram!");
+    log::info!("Connected to Telegram!");
 
     // Sign in if needed
     if !client.is_authorized().await? {
-        info!("Not logged in, sending code request...");
+        log::info!("Not logged in, sending code request...");
         let phone: String = settings
             .get("tg_phone")
             .context("tg_phone not found in config.toml")?;
-        info!("Using phone number from config: {}", phone);
+        log::info!("Using phone number from config: {}", phone);
         let token = client.request_login_code(&phone).await?;
         let code = input("Enter the code you received: ")?;
 
         let user = match client.sign_in(&token, &code).await {
             Ok(user) => user,
             Err(grammers_client::client::auth::SignInError::PasswordRequired(password_token)) => {
-                info!("2FA is required");
+                log::info!("2FA is required");
                 let password = input("Enter your 2FA password: ")?;
                 client.check_password(password_token, password).await?
             }
@@ -79,36 +84,39 @@ async fn main() -> Result<()> {
         if name.is_empty() {
             name.push_str("<unnamed>");
         };
-        info!("Logged in successfully as {name}!");
+        log::info!("Logged in successfully as {name}!");
 
         // Save the session after successful authentication
         client.session().save_to_file(SESSION_FILE)?;
     }
 
     // Start watching for updates
-    info!("Watching for updates...");
+    log::info!("Watching for updates...");
     loop {
         let (update, _chats) = client.next_raw_update().await?;
         match update {
-            tl::enums::Update::NewMessage(message) => {
-                info!("New message: {:?}", message);
+            tl::enums::Update::NewMessage(wrapper) => {
+                log::info!("New message: {:?}", wrapper);
+                database.save_message(&wrapper.message, false)?;
 
-                if let Err(e) = try_download_media_raw(&message.message, &client).await {
-                    error!("Failed to download media: {}", e)
+                if let Err(e) = try_download_media_raw(&wrapper.message, &client).await {
+                    log::error!("Failed to download media: {}", e)
                 }
             }
-            tl::enums::Update::EditMessage(message) => {
-                info!("Message edited: {:?}", message);
+            tl::enums::Update::EditMessage(wrapper) => {
+                log::info!("Message edited: {:?}", wrapper);
+                database.save_message(&wrapper.message, true)?;
 
-                if let Err(e) = try_download_media_raw(&message.message, &client).await {
-                    error!("Failed to download media: {}", e)
+                if let Err(e) = try_download_media_raw(&wrapper.message, &client).await {
+                    log::error!("Failed to download media: {}", e)
                 }
             }
-            tl::enums::Update::DeleteMessages(delete_info) => {
-                info!("Message(s) deleted: {:?}", delete_info);
+            tl::enums::Update::DeleteMessages(wrapper) => {
+                log::info!("Message(s) deleted: {:?}", wrapper);
+                database.save_messages_deleted(&wrapper.messages)?;
             }
             _ => {
-                warn!("Unhandled raw update: {:?}", update);
+                log::debug!("Unhandled raw update: {:?}", update);
             }
         }
     }
@@ -128,7 +136,7 @@ fn input(message: &str) -> Result<String> {
 fn ensure_media_dir_exists() -> Result<()> {
     let media_path = Path::new(MEDIA_DIR);
     if !media_path.exists() {
-        info!("Creating media directory at {}", media_path.display());
+        log::info!("Creating media directory at {}", media_path.display());
         fs::create_dir_all(media_path)?;
     }
     Ok(())
@@ -141,11 +149,7 @@ async fn try_download_media_raw(
 ) -> Result<Option<PathBuf>> {
     use tl::enums::*;
 
-    // let message = Message::from_raw(client, raw_message.clone(), chats)
-    //     .context("Failed to convert raw message to Message")?;
-    // let Some(media) = message.media() else {
-    //     return Ok(None); // No media in this message
-    // };
+    let msg_id = raw_message.id();
 
     let Message::Message(raw_message) = raw_message else {
         return Ok(None); // Only Messages can have media
@@ -157,15 +161,7 @@ async fn try_download_media_raw(
         return Ok(None); // No media in this message
     };
 
-    let chat_id = match raw_message.peer_id {
-        Peer::User(ref user) => user.user_id,
-        Peer::Chat(ref chat) => chat.chat_id,
-        Peer::Channel(ref channel) => channel.channel_id,
-    };
-
-    // Generate filename based on date/time
-    let now = Local::now();
-    let date_str = now.format("%Y-%m-%d_%H-%M-%S");
+    let chat_id = raw_message.chat_id().unwrap();
 
     // Determine file extension based on media type
     let ext = match media {
@@ -194,9 +190,8 @@ async fn try_download_media_raw(
         Media::Dice(_) => "dice".to_owned(),   // Just a placeholder, not downloadable
         Media::WebPage(_) => "html".to_owned(), // Just a placeholder, not downloadable
         media => unreachable!("Unexpected media type: {:?}", media),
-
     };
-    let file_name = format!("{date_str}_{}.{ext}", raw_message.id);
+    let file_name = format!("{msg_id}.{ext}");
 
     // Get chat info for the filename
     let chat_name = format!("chat_{chat_id}");
@@ -204,10 +199,13 @@ async fn try_download_media_raw(
     // Create filename with date, chat name, message ID, and correct extension
     let file_path = Path::new(MEDIA_DIR).join(&chat_name).join(&file_name);
     fs::create_dir_all(file_path.parent().unwrap())?;
-    info!("Attempting to download media to: {}", file_path.display());
+    log::info!("Attempting to download media to: {}", file_path.display());
+    if file_path.exists() {
+        log::info!("File already exists, overwriting: {}", file_path.display());
+    }
 
     // Download the media
     client.download_media(&media, &file_path).await?;
-    info!("Successfully downloaded media to: {}", file_path.display());
+    log::info!("Successfully downloaded media to: {}", file_path.display());
     Ok(Some(file_path))
 }
