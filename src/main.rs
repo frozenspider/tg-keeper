@@ -5,7 +5,7 @@ use crate::utils::*;
 use anyhow::{Context, Result};
 use config::Config as AppConfig;
 use grammers_client::grammers_tl_types as tl;
-use grammers_client::types::Media;
+use grammers_client::types::{Downloadable, Media};
 use grammers_client::{Client, Config, InitParams};
 use grammers_session::Session;
 use std::fs;
@@ -102,7 +102,8 @@ async fn main() -> Result<()> {
                 log::info!("New message: {:?}", wrapper);
                 database.save_message(&wrapper.message, false)?;
 
-                if let Err(e) = try_download_media_raw(&media_path, &wrapper.message, &client).await {
+                if let Err(e) = try_download_media_raw(&media_path, &wrapper.message, &client).await
+                {
                     log::error!("Failed to download media: {}", e)
                 }
             }
@@ -110,7 +111,8 @@ async fn main() -> Result<()> {
                 log::info!("Message edited: {:?}", wrapper);
                 database.save_message(&wrapper.message, true)?;
 
-                if let Err(e) = try_download_media_raw(&media_path, &wrapper.message, &client).await {
+                if let Err(e) = try_download_media_raw(&media_path, &wrapper.message, &client).await
+                {
                     log::error!("Failed to download media: {}", e)
                 }
             }
@@ -178,11 +180,15 @@ async fn try_download_media_raw(
             }
         }
         Media::Contact(_) => "vcf".to_owned(),
-        Media::Poll(_) => "poll".to_owned(), // Just a placeholder, not downloadable
-        Media::Geo(_) | Media::GeoLive(_) => "geo".to_owned(), // Just a placeholder, not downloadable
-        Media::Venue(_) => "venue".to_owned(), // Just a placeholder, not downloadable
-        Media::Dice(_) => "dice".to_owned(),   // Just a placeholder, not downloadable
-        Media::WebPage(_) => "html".to_owned(), // Just a placeholder, not downloadable
+        Media::Poll(_)
+        | Media::Geo(_)
+        | Media::GeoLive(_)
+        | Media::Venue(_)
+        | Media::Dice(_)
+        | Media::WebPage(_) => {
+            // Not downloadable
+            return Ok(None);
+        }
         media => unreachable!("Unexpected media type: {:?}", media),
     };
     let file_name = format!("{msg_id}.{ext}");
