@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::Local;
 use config::Config as AppConfig;
-use grammers_client::types::{Media, Message};
-use grammers_client::{Client, Config, InitParams, Update};
+use grammers_client::grammers_tl_types as tl;
+use grammers_client::types::Media;
+use grammers_client::{Client, Config, InitParams};
 use grammers_session::Session;
 use log::{error, info, warn};
 use std::fs;
@@ -66,9 +67,7 @@ async fn main() -> Result<()> {
         let code = input("Enter the code you received: ")?;
 
         let user = match client.sign_in(&token, &code).await {
-            Ok(user) => {
-                user
-            }
+            Ok(user) => user,
             Err(grammers_client::client::auth::SignInError::PasswordRequired(password_token)) => {
                 info!("2FA is required");
                 let password = input("Enter your 2FA password: ")?;
@@ -89,27 +88,27 @@ async fn main() -> Result<()> {
     // Start watching for updates
     info!("Watching for updates...");
     loop {
-        let update = client.next_update().await?;
+        let (update, _chats) = client.next_raw_update().await?;
         match update {
-            Update::NewMessage(message) => {
+            tl::enums::Update::NewMessage(message) => {
                 info!("New message: {:?}", message);
 
-                if let Err(e) = try_download_media(&message).await {
-                    error!("Failed to download photo: {}", e)
+                if let Err(e) = try_download_media_raw(&message.message, &client).await {
+                    error!("Failed to download media: {}", e)
                 }
             }
-            Update::MessageEdited(message) => {
+            tl::enums::Update::EditMessage(message) => {
                 info!("Message edited: {:?}", message);
 
-                if let Err(e) = try_download_media(&message).await {
-                    error!("Failed to download photo: {}", e)
+                if let Err(e) = try_download_media_raw(&message.message, &client).await {
+                    error!("Failed to download media: {}", e)
                 }
             }
-            Update::MessageDeleted(message_id) => {
-                info!("Message deleted: {:?}", message_id);
+            tl::enums::Update::DeleteMessages(delete_info) => {
+                info!("Message(s) deleted: {:?}", delete_info);
             }
             _ => {
-                warn!("Unhandled update: {:?}", update);
+                warn!("Unhandled raw update: {:?}", update);
             }
         }
     }
@@ -135,42 +134,72 @@ fn ensure_media_dir_exists() -> Result<()> {
     Ok(())
 }
 
-// Download media from message with the correct extension
-async fn try_download_media(message: &Message) -> Result<Option<PathBuf>> {
-    let Some(media) = message.media() else {
+// Download media from raw message with the correct extension
+async fn try_download_media_raw(
+    raw_message: &tl::enums::Message,
+    client: &Client,
+) -> Result<Option<PathBuf>> {
+    use tl::enums::*;
+
+    // let message = Message::from_raw(client, raw_message.clone(), chats)
+    //     .context("Failed to convert raw message to Message")?;
+    // let Some(media) = message.media() else {
+    //     return Ok(None); // No media in this message
+    // };
+
+    let Message::Message(raw_message) = raw_message else {
+        return Ok(None); // Only Messages can have media
+    };
+    let Some(ref raw_media) = raw_message.media else {
+        return Ok(None); // No media in this message
+    };
+    let Some(media) = Media::from_raw(raw_media.clone()) else {
         return Ok(None); // No media in this message
     };
 
-    // Determine file extension based on media type
-    let file_name = match media {
-        Media::Document(doc) if !doc.name().is_empty() => doc.name().to_owned(),
-        media => {
-            // Generate filename based on date/time
-            let now = Local::now();
-            let date_str = now.format("%Y-%m-%d_%H-%M-%S");
-
-            let ext = match media {
-                Media::Photo(_p) => "jpg".to_owned(),
-                Media::Sticker(_s) => "webp".to_owned(),
-                Media::Document(doc) => doc
-                    .mime_type()
-                    .and_then(mime2ext::mime2ext)
-                    .unwrap_or("bin")
-                    .to_owned(),
-                Media::Contact(_) => "vcf".to_owned(),
-                Media::Poll(_) => "poll".to_owned(), // Just a placeholder, not downloadable
-                Media::Geo(_) | Media::GeoLive(_) => "geo".to_owned(), // Just a placeholder, not downloadable
-                Media::Venue(_) => "venue".to_owned(), // Just a placeholder, not downloadable
-                Media::Dice(_) => "dice".to_owned(),   // Just a placeholder, not downloadable
-                Media::WebPage(_) => "html".to_owned(), // Just a placeholder, not downloadable
-                media => unreachable!("Unexpected media type: {:?}", media),
-            };
-            format!("{date_str}_{}.{ext}", message.id())
-        }
+    let chat_id = match raw_message.peer_id {
+        Peer::User(ref user) => user.user_id,
+        Peer::Chat(ref chat) => chat.chat_id,
+        Peer::Channel(ref channel) => channel.channel_id,
     };
 
+    // Generate filename based on date/time
+    let now = Local::now();
+    let date_str = now.format("%Y-%m-%d_%H-%M-%S");
+
+    // Determine file extension based on media type
+    let ext = match media {
+        Media::Photo(ref _p) => "jpg".to_owned(),
+        Media::Sticker(ref _v) => "webp".to_owned(),
+        Media::Document(ref doc) => {
+            let name = doc.name();
+            let ext_option = if !name.is_empty() {
+                Path::new(name).extension().and_then(|s| s.to_str())
+            } else {
+                None
+            };
+            if let Some(ext) = ext_option {
+                ext.to_owned()
+            } else {
+                doc.mime_type()
+                    .and_then(mime2ext::mime2ext)
+                    .unwrap_or("bin")
+                    .to_owned()
+            }
+        }
+        Media::Contact(_) => "vcf".to_owned(),
+        Media::Poll(_) => "poll".to_owned(), // Just a placeholder, not downloadable
+        Media::Geo(_) | Media::GeoLive(_) => "geo".to_owned(), // Just a placeholder, not downloadable
+        Media::Venue(_) => "venue".to_owned(), // Just a placeholder, not downloadable
+        Media::Dice(_) => "dice".to_owned(),   // Just a placeholder, not downloadable
+        Media::WebPage(_) => "html".to_owned(), // Just a placeholder, not downloadable
+        media => unreachable!("Unexpected media type: {:?}", media),
+
+    };
+    let file_name = format!("{date_str}_{}.{ext}", raw_message.id);
+
     // Get chat info for the filename
-    let chat_name = format!("chat_{}", message.chat().id());
+    let chat_name = format!("chat_{chat_id}");
 
     // Create filename with date, chat name, message ID, and correct extension
     let file_path = Path::new(MEDIA_DIR).join(&chat_name).join(&file_name);
@@ -178,8 +207,7 @@ async fn try_download_media(message: &Message) -> Result<Option<PathBuf>> {
     info!("Attempting to download media to: {}", file_path.display());
 
     // Download the media
-    let media_present = message.download_media(&file_path).await?;
-    assert!(media_present);
+    client.download_media(&media, &file_path).await?;
     info!("Successfully downloaded media to: {}", file_path.display());
     Ok(Some(file_path))
 }
