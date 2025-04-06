@@ -12,6 +12,7 @@
 /target
 
 # Generated
+media
 *.log
 
 # Secrets
