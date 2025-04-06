@@ -11,7 +11,7 @@ use grammers_session::Session;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 const SESSION_FILE: &str = "tg-keeper.session";
@@ -31,18 +31,11 @@ async fn main() -> Result<()> {
 
     let interrupted = Arc::new(AtomicBool::new(false));
 
-    {
-        let interrupted = interrupted.clone();
-        ctrlc::set_handler(move || {
-            log::info!("Received Ctrl+C, stopping...");
-            interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
-        })?;
-    }
-
     let data_path = Path::new(DATA_DIR);
     let media_path = data_path.join(MEDIA_SUBDIR);
     fs::create_dir_all(&media_path)?;
     let database_file = data_path.join(DB_FILE);
+    let session_file = data_path.join(SESSION_FILE);
 
     let mut database = db::Database::new(&database_file)?;
 
@@ -70,7 +63,7 @@ async fn main() -> Result<()> {
 
     // Create client configuration
     let config = Config {
-        session: Session::load_file_or_create(SESSION_FILE)?,
+        session: Session::load_file_or_create(&session_file)?,
         api_id,
         api_hash: api_hash.clone(),
         params: InitParams {
@@ -106,61 +99,122 @@ async fn main() -> Result<()> {
         log::info!("Logged in successfully as {name}");
 
         // Save the session after successful authentication
-        client.session().save_to_file(SESSION_FILE)?;
+        client.session().save_to_file(&session_file)?;
     }
 
     // Start watching for updates
-    log::info!("Watching for updates...");
-    let mut session_save_time = Instant::now();
-    while !interrupted.load(std::sync::atomic::Ordering::SeqCst) {
-        let (update, chats) = client.next_raw_update().await?;
-        database.update_chats(&chats)?;
+    let spawned = {
+        let interrupted = interrupted.clone();
+        let client = client.clone();
+        let session_file = session_file.clone();
+        let mut session_save_time = Instant::now();
+        log::info!("Watching for updates...");
+        tokio::spawn(async move {
+            while !interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+                let (update, chats) = client.next_raw_update().await?;
+                database.update_chats(&chats)?;
 
-        match update {
-            tl::enums::Update::NewMessage(wrapper) => {
-                log::info!("New message: {}", to_pretty_summary(&wrapper.message, &chats));
-                database.save_message(&wrapper.message, false)?;
+                match update {
+                    tl::enums::Update::NewMessage(wrapper) => {
+                        log::info!(
+                            "New message: {}",
+                            to_pretty_summary(&wrapper.message, &chats)
+                        );
 
-                if let Err(e) = try_download_media_raw(&media_path, &wrapper.message, &client).await
-                {
-                    log::error!("Failed to download media: {}", e)
+                        let media_rel_path =
+                            try_download_media_raw(&media_path, &wrapper.message, &client)
+                                .await
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to download media: {}", e);
+                                    None
+                                });
+
+                        database.save_message(&wrapper.message, false, media_rel_path)?;
+                    }
+                    tl::enums::Update::EditMessage(wrapper) => {
+                        log::info!(
+                            "Message edited: {}",
+                            to_pretty_summary(&wrapper.message, &chats)
+                        );
+
+                        let media_rel_path =
+                            try_download_media_raw(&media_path, &wrapper.message, &client)
+                                .await
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to download media: {}", e);
+                                    None
+                                });
+
+                        database.save_message(&wrapper.message, true, media_rel_path)?;
+                    }
+                    tl::enums::Update::DeleteMessages(wrapper) => {
+                        log::info!("Message(s) deleted: {:?}", wrapper.messages);
+                        database.save_messages_deleted(&wrapper.messages)?;
+                    }
+                    _ => {
+                        log::debug!("Unhandled raw update: {:?}", update);
+                    }
+                }
+
+                // Save the session every 30 seconds
+                if session_save_time.elapsed().as_secs() > 30 {
+                    client.session().save_to_file(&session_file)?;
+                    session_save_time = Instant::now();
                 }
             }
-            tl::enums::Update::EditMessage(wrapper) => {
-                log::info!("Message edited: {}", to_pretty_summary(&wrapper.message, &chats));
-                database.save_message(&wrapper.message, true)?;
 
-                if let Err(e) = try_download_media_raw(&media_path, &wrapper.message, &client).await
-                {
-                    log::error!("Failed to download media: {}", e)
-                }
-            }
-            tl::enums::Update::DeleteMessages(wrapper) => {
-                log::info!("Message(s) deleted: {:?}", wrapper.messages);
-                database.save_messages_deleted(&wrapper.messages)?;
-            }
-            _ => {
-                log::debug!("Unhandled raw update: {:?}", update);
-            }
-        }
+            Ok::<_, anyhow::Error>(())
+        })
+    };
+    let spawned = Arc::new(Mutex::new(Some(spawned)));
 
-        // Save the session every 30 seconds
-        if session_save_time.elapsed().as_secs() > 30 {
-            client.session().save_to_file(SESSION_FILE)?;
-            session_save_time = Instant::now();
-        }
+    {
+        let spawned = spawned.clone();
+        ctrlc::set_handler(move || {
+            log::info!("Received Ctrl+C, stopping...");
+            interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
+            let spawned = spawned.lock().unwrap();
+            if let Some(ref spawned) = *spawned {
+                spawned.abort();
+            }
+        })?;
     }
 
-    client.session().save_to_file(SESSION_FILE)?;
-    Ok(())
+    // Have to resort to busy loop here :(
+    let awaited = loop {
+        // Wait for the spawned task to finish
+        let mut spawned = spawned.lock().unwrap();
+
+        if spawned
+            .as_ref()
+            .is_some_and(|ref spawned| spawned.is_finished())
+        {
+            let spawned = spawned.take().unwrap();
+            let awaited = spawned.await;
+            break awaited;
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    };
+
+    client.session().save_to_file(&session_file)?;
+
+    match awaited {
+        Err(e) if e.is_cancelled() => {
+            // NOOP
+            Ok(())
+        }
+        etc => etc?
+    }
 }
 
-/// Download media from raw message with the correct extension
+/// Download media from raw message with the correct extension.
+/// Returns the relative path to the downloaded file.
 async fn try_download_media_raw(
     media_path: &Path,
     raw_message: &tl::enums::Message,
     client: &Client,
-) -> Result<Option<PathBuf>> {
+) -> Result<Option<String>> {
     use tl::enums::*;
 
     let msg_id = raw_message.id();
@@ -217,15 +271,16 @@ async fn try_download_media_raw(
     // Create filename with date, chat name, message ID, and correct extension
     let file_path = media_path.join(&chat_name).join(&file_name);
     fs::create_dir_all(file_path.parent().unwrap())?;
-    log::info!("Attempting to download media to: {}", file_path.display());
+    let rel_path = format!("{chat_name}/{file_name}");
+    log::info!("Attempting to download media to: {}", rel_path);
     if file_path.exists() {
-        log::info!("File already exists, overwriting: {}", file_path.display());
+        log::info!("File already exists, overwriting: {}", rel_path);
     }
 
     // Download the media
     client.download_media(&media, &file_path).await?;
-    log::info!("Successfully downloaded media to: {}", file_path.display());
-    Ok(Some(file_path))
+    log::info!("Successfully downloaded media to: {}", rel_path);
+    Ok(Some(rel_path))
 }
 
 fn to_pretty_summary(msg: &tl::enums::Message, chat_map: &ChatMap) -> String {
@@ -258,7 +313,10 @@ fn to_pretty_summary(msg: &tl::enums::Message, chat_map: &ChatMap) -> String {
 
     let chat_name = peer.and_then(|c| c.name()).unwrap_or("<no name>");
     let mut lines = message_text.trim().lines();
-    let mut first_line = lines.next().map(|s| s.trim().to_owned()).unwrap_or("<no message>".to_owned());
+    let mut first_line = lines
+        .next()
+        .map(|s| s.trim().to_owned())
+        .unwrap_or("<no message>".to_owned());
     if lines.next().is_some() {
         first_line.push_str(" ...");
     }

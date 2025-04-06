@@ -1329,6 +1329,7 @@ dependencies = [
  "config",
  "ctrlc",
  "env_logger",
+ "futures",
  "grammers-client",
  "grammers-session",
  "log",

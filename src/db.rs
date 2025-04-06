@@ -15,7 +15,8 @@ const TYPE_MESSAGE: &str = "message";
 const TYPE_MESSAGE_DELETED: &str = "message_deleted";
 
 const SQL_INSERT: &str =
-    "INSERT INTO events (chat_id, message_id, date, is_edited, type, serialized) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+    "INSERT INTO events (chat_id, message_id, date, is_edited, type, serialized, media_rel_path) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
 
 impl Database {
     pub fn new(db_file: &Path) -> Result<Self> {
@@ -30,7 +31,8 @@ impl Database {
                 date INTEGER,
                 is_edited INTEGER NOT NULL,
                 type TEXT NOT NULL,
-                serialized BLOB
+                serialized BLOB,
+                media_rel_path TEXT
             )",
             [],
         )
@@ -76,6 +78,7 @@ impl Database {
         &mut self,
         raw_message: &tl::enums::Message,
         is_edited: bool,
+        media_rel_path: Option<String>,
     ) -> Result<()> {
         let serialized = raw_message.to_bytes();
 
@@ -91,7 +94,8 @@ impl Database {
                     date,
                     is_edited,
                     TYPE_MESSAGE,
-                    serialized
+                    serialized,
+                    media_rel_path
                 ],
             )
             .context("Failed to save message to database")?;
@@ -104,7 +108,7 @@ impl Database {
         for id in message_id {
             tx.execute(
                 SQL_INSERT,
-                params![Null, id, Null, false, TYPE_MESSAGE_DELETED, Null],
+                params![Null, id, Null, false, TYPE_MESSAGE_DELETED, Null, Null],
             )
             .context("Failed to save message deleted to database")?;
         }

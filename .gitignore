@@ -16,5 +16,4 @@ data
 *.log
 
 # Secrets
-*.session
 config.toml
