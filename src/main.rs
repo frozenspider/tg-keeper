@@ -192,11 +192,13 @@ async fn main() -> Result<()> {
             let awaited = spawned.await;
             break awaited;
         }
+        drop(spawned);
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     };
 
     client.session().save_to_file(&session_file)?;
+    drop(client);
 
     match awaited {
         Err(e) if e.is_cancelled() => {
