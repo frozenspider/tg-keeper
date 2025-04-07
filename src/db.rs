@@ -11,12 +11,13 @@ pub struct Database {
     chats: HashMap<i64, (types::Chat, Vec<u8>)>,
 }
 
-const TYPE_MESSAGE: &str = "message";
+const TYPE_MESSAGE_NEW: &str = "message_new";
+const TYPE_MESSAGE_EDITED: &str = "message_edited";
 const TYPE_MESSAGE_DELETED: &str = "message_deleted";
 
 const SQL_INSERT: &str =
-    "INSERT INTO events (chat_id, message_id, date, is_edited, type, serialized, media_rel_path) \
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+    "INSERT INTO events (chat_id, message_id, date, type, serialized, media_rel_path) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
 impl Database {
     pub fn new(db_file: &Path) -> Result<Self> {
@@ -29,7 +30,6 @@ impl Database {
                 chat_id INTEGER,
                 message_id INTEGER NOT NULL,
                 date INTEGER,
-                is_edited INTEGER NOT NULL,
                 type TEXT NOT NULL,
                 serialized BLOB,
                 media_rel_path TEXT
@@ -84,6 +84,11 @@ impl Database {
 
         let chat_id = raw_message.chat_id().unwrap();
         let date = raw_message.date();
+        let event_type = if is_edited {
+            TYPE_MESSAGE_EDITED
+        } else {
+            TYPE_MESSAGE_NEW
+        };
 
         self.conn
             .execute(
@@ -92,8 +97,7 @@ impl Database {
                     chat_id,
                     raw_message.id(),
                     date,
-                    is_edited,
-                    TYPE_MESSAGE,
+                    event_type,
                     serialized,
                     media_rel_path
                 ],
@@ -108,7 +112,7 @@ impl Database {
         for id in message_id {
             tx.execute(
                 SQL_INSERT,
-                params![Null, id, Null, false, TYPE_MESSAGE_DELETED, Null, Null],
+                params![Null, id, Null, TYPE_MESSAGE_DELETED, Null, Null],
             )
             .context("Failed to save message deleted to database")?;
         }
