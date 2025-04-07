@@ -1,6 +1,18 @@
 [package]
 name = "tg-keeper"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+grammers-client = { git = "https://github.com/Lonami/grammers" }
+grammers-session = { git = "https://github.com/Lonami/grammers" }
+tokio = { version = "1.44", features = ["full"] }
+anyhow = "1.0"
+env_logger = "0.10"
+log = "0.4"
+config = "0.13"
+mime2ext = "0.1"
+rusqlite = { version = "0.30", features = ["bundled", "serde_json"] }
+ctrlc = "3.4.6"
+rpassword = "7.3.1"
+futures = "0.3.31"
