@@ -7,7 +7,7 @@ use config::Config as AppConfig;
 use grammers_client::types::Media;
 use grammers_client::{grammers_tl_types as tl, types};
 use grammers_client::{Client, Config, InitParams};
-use grammers_mtsender::ServerAddr;
+use grammers_mtsender::{FixedReconnect, ServerAddr};
 use grammers_session::Session;
 use std::collections::HashMap;
 use std::fs;
@@ -15,7 +15,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -27,12 +27,20 @@ const DB_FILE: &str = "tg-keeper.sqlite";
 const DATA_DIR: &str = "data";
 const MEDIA_SUBDIR: &str = "media";
 
+// Attempt to reconnect every 5 min, unlimited tries
+static RECONNECTION_POLICY: FixedReconnect = FixedReconnect {
+    attempts: usize::MAX,
+    delay: Duration::from_secs(5 * 60),
+};
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
     env_logger::init_from_env(
         env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
     );
+
+    log::info!("Starting tg-keeper v{VERSION}");
 
     let interrupted = Arc::new(AtomicBool::new(false));
 
@@ -46,7 +54,10 @@ async fn main() -> Result<()> {
 
     // Load configuration
     let config_path = PathBuf::from(CONFIG_FILE);
-    ensure!(config_path.exists(), "{CONFIG_FILE} not found. Please copy {CONFIG_EXAMPLE_FILE} to {CONFIG_FILE} and fill in your credentials.");
+    ensure!(
+        config_path.exists(),
+        "{CONFIG_FILE} not found. Please copy {CONFIG_EXAMPLE_FILE} to {CONFIG_FILE} and fill in your credentials."
+    );
 
     let settings = AppConfig::builder()
         .add_source(config::File::from(config_path))
@@ -79,7 +90,10 @@ async fn main() -> Result<()> {
         params: InitParams {
             app_version: VERSION.to_owned(),
             catch_up: true,
-            server_addr: Some(ServerAddr::Tcp { address: tg_address }),
+            server_addr: Some(ServerAddr::Tcp {
+                address: tg_address,
+            }),
+            reconnection_policy: &RECONNECTION_POLICY,
             ..Default::default()
         },
     };
