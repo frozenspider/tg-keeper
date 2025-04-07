@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 grammers-client = { git = "https://github.com/Lonami/grammers" }
 grammers-session = { git = "https://github.com/Lonami/grammers" }
+grammers-mtsender = { git = "https://github.com/Lonami/grammers" }
 tokio = { version = "1.44", features = ["full"] }
 anyhow = "1.0"
 env_logger = "0.10"

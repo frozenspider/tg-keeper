@@ -7,13 +7,17 @@ use config::Config as AppConfig;
 use grammers_client::types::Media;
 use grammers_client::{grammers_tl_types as tl, types};
 use grammers_client::{Client, Config, InitParams};
+use grammers_mtsender::ServerAddr;
 use grammers_session::Session;
 use std::collections::HashMap;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const SESSION_FILE: &str = "tg-keeper.session";
 const CONFIG_FILE: &str = "config.toml";
@@ -56,9 +60,16 @@ async fn main() -> Result<()> {
     let api_hash: String = settings
         .get("tg_api_hash")
         .context("tg_api_hash not found in config")?;
+    let tg_address: String = settings
+        .get("tg_address")
+        .context("tg_address not found in config")?;
     let phone: String = settings
         .get("tg_phone")
         .context("tg_phone not found in config.toml")?;
+
+    let tg_address = tg_address
+        .parse::<SocketAddr>()
+        .context("Invalid tg_address format")?;
 
     // Create client configuration
     let config = Config {
@@ -66,7 +77,9 @@ async fn main() -> Result<()> {
         api_id,
         api_hash: api_hash.clone(),
         params: InitParams {
+            app_version: VERSION.to_owned(),
             catch_up: true,
+            server_addr: Some(ServerAddr::Tcp { address: tg_address }),
             ..Default::default()
         },
     };
