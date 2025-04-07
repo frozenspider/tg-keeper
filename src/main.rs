@@ -2,12 +2,13 @@ mod db;
 mod utils;
 
 use crate::utils::*;
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use config::Config as AppConfig;
 use grammers_client::types::Media;
-use grammers_client::{grammers_tl_types as tl, ChatMap};
+use grammers_client::{grammers_tl_types as tl, types};
 use grammers_client::{Client, Config, InitParams};
 use grammers_session::Session;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -41,9 +42,7 @@ async fn main() -> Result<()> {
 
     // Load configuration
     let config_path = PathBuf::from(CONFIG_FILE);
-    if !config_path.exists() {
-        return Err(anyhow::anyhow!("{CONFIG_FILE} not found. Please copy {CONFIG_EXAMPLE_FILE} to {CONFIG_FILE} and fill in your credentials."));
-    }
+    ensure!(config_path.exists(), "{CONFIG_FILE} not found. Please copy {CONFIG_EXAMPLE_FILE} to {CONFIG_FILE} and fill in your credentials.");
 
     let settings = AppConfig::builder()
         .add_source(config::File::from(config_path))
@@ -90,7 +89,7 @@ async fn main() -> Result<()> {
                 let password = rpassword::prompt_password("Enter your 2FA password: ")?;
                 client.check_password(password_token, password).await?
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e).context("Sign in failed"),
         };
         let mut name = user.full_name();
         if name.is_empty() {
@@ -112,7 +111,7 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             while !interrupted.load(std::sync::atomic::Ordering::SeqCst) {
                 let (update, chats) = client.next_raw_update().await?;
-                database.update_chats(&chats)?;
+                let chats = database.update_chats(&chats)?;
 
                 match update {
                     tl::enums::Update::NewMessage(wrapper) => {
@@ -204,7 +203,7 @@ async fn main() -> Result<()> {
             // NOOP
             Ok(())
         }
-        etc => etc?
+        etc => etc?,
     }
 }
 
@@ -283,35 +282,49 @@ async fn try_download_media_raw(
     Ok(Some(rel_path))
 }
 
-fn to_pretty_summary(msg: &tl::enums::Message, chat_map: &ChatMap) -> String {
+fn to_pretty_summary(msg: &tl::enums::Message, chat_map: &HashMap<i64, types::Chat>) -> String {
     // Extract chat ID
     let chat_id = match msg.chat_id() {
         Some(id) => id,
         None => return "[Unknown chat]: <no message data>".to_string(),
     };
 
+    /// Helper function to describe media type
+    fn describe_media(media: &tl::enums::MessageMedia) -> &'static str {
+        match media {
+            tl::enums::MessageMedia::Photo(_) => "photo",
+            tl::enums::MessageMedia::Document(_) => "document",
+            tl::enums::MessageMedia::Geo(_) => "geo",
+            tl::enums::MessageMedia::Contact(_) => "contact",
+            tl::enums::MessageMedia::Unsupported => "unsupported",
+            tl::enums::MessageMedia::WebPage(_) => "webpage",
+            tl::enums::MessageMedia::Venue(_) => "venue",
+            tl::enums::MessageMedia::Game(_) => "game",
+            tl::enums::MessageMedia::Invoice(_) => "invoice",
+            tl::enums::MessageMedia::GeoLive(_) => "geo live",
+            tl::enums::MessageMedia::Poll(_) => "poll",
+            tl::enums::MessageMedia::Dice(_) => "dice",
+            tl::enums::MessageMedia::Empty => "empty",
+            tl::enums::MessageMedia::Story(_) => "story",
+            tl::enums::MessageMedia::Giveaway(_) => "giveaway",
+            tl::enums::MessageMedia::GiveawayResults(_) => "giveaway results",
+            tl::enums::MessageMedia::PaidMedia(_) => "paid media",
+        }
+    }
+
     // Get message text or description
-    let (peer, message_text) = match msg {
-        tl::enums::Message::Message(m) => {
-            let peer = chat_map.get(&m.peer_id);
-            let text = if !m.message.is_empty() {
-                m.message.clone()
-            } else {
-                match &m.media {
-                    Some(media) => format!("<{}>", describe_media(media)),
-                    None => "<empty message>".to_owned(),
-                }
-            };
-            (peer, text)
-        }
-        tl::enums::Message::Service(m) => {
-            let peer = chat_map.get(&m.peer_id);
-            (peer, format!("<service: {:?}>", m.action))
-        }
-        tl::enums::Message::Empty(_) => (None, "<empty>".to_owned()),
+    let message_text = match msg {
+        tl::enums::Message::Message(m) if !m.message.is_empty() => m.message.clone(),
+        tl::enums::Message::Message(m) => match &m.media {
+            Some(media) => format!("<{}>", describe_media(media)),
+            None => "<empty message>".to_owned(),
+        },
+        tl::enums::Message::Service(m) => format!("<service: {:?}>", m.action),
+        tl::enums::Message::Empty(_) => "<empty>".to_owned(),
     };
 
-    let chat_name = peer.and_then(|c| c.name()).unwrap_or("<no name>");
+    let chat = chat_map.get(&chat_id);
+    let chat_name = chat.and_then(|c| c.name()).unwrap_or("<no name>");
     let mut lines = message_text.trim().lines();
     let mut first_line = lines
         .next()
@@ -323,27 +336,4 @@ fn to_pretty_summary(msg: &tl::enums::Message, chat_map: &ChatMap) -> String {
 
     // Format the summary for text messages
     format!("{chat_name} (#{chat_id}): {first_line}")
-}
-
-/// Helper function to describe media type
-fn describe_media(media: &tl::enums::MessageMedia) -> &'static str {
-    match media {
-        tl::enums::MessageMedia::Photo(_) => "photo",
-        tl::enums::MessageMedia::Document(_) => "document",
-        tl::enums::MessageMedia::Geo(_) => "geo",
-        tl::enums::MessageMedia::Contact(_) => "contact",
-        tl::enums::MessageMedia::Unsupported => "unsupported",
-        tl::enums::MessageMedia::WebPage(_) => "webpage",
-        tl::enums::MessageMedia::Venue(_) => "venue",
-        tl::enums::MessageMedia::Game(_) => "game",
-        tl::enums::MessageMedia::Invoice(_) => "invoice",
-        tl::enums::MessageMedia::GeoLive(_) => "geo live",
-        tl::enums::MessageMedia::Poll(_) => "poll",
-        tl::enums::MessageMedia::Dice(_) => "dice",
-        tl::enums::MessageMedia::Empty => "empty",
-        tl::enums::MessageMedia::Story(_) => "story",
-        tl::enums::MessageMedia::Giveaway(_) => "giveaway",
-        tl::enums::MessageMedia::GiveawayResults(_) => "giveaway results",
-        tl::enums::MessageMedia::PaidMedia(_) => "paid media",
-    }
 }

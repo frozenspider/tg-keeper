@@ -117,7 +117,7 @@ impl Database {
     }
 
     /// Update the cached chats with new chat data
-    pub fn update_chats(&mut self, chat_map: &ChatMap) -> Result<()> {
+    pub fn update_chats(&mut self, chat_map: &ChatMap) -> Result<HashMap<i64, types::Chat>> {
         let mut updated_ctr = 0;
 
         for chat in chat_map.iter_chats() {
@@ -151,7 +151,9 @@ impl Database {
             log::info!("Updated {updated_ctr} chats in cache");
         }
 
-        Ok(())
+        let result = self.chats.iter().map(|(k, v)| (*k, v.0.clone())).collect();
+
+        Ok(result)
     }
 }
 
