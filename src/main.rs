@@ -264,7 +264,8 @@ async fn try_download_media_raw(
     // Determine file extension based on media type
     let ext = match media {
         Media::Photo(ref _p) => "jpg".to_owned(),
-        Media::Sticker(ref _v) => "webp".to_owned(),
+        Media::Sticker(s) if s.is_animated() => "tgs".to_owned(),
+        Media::Sticker(_) => "webp".to_owned(),
         Media::Document(ref doc) => {
             let name = doc.name();
             let ext_option = if !name.is_empty() {
