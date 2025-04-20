@@ -135,6 +135,7 @@ impl Database {
                 .is_none_or(|(_, existing_serialized)| existing_serialized != &serialized);
 
             if should_update {
+                // TODO: Add/replace info instead of deleting it?
                 log::debug!("Updating chat {}", chat_id);
                 self.chats
                     .insert(chat_id, (chat.clone(), serialized.clone()));

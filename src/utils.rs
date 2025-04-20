@@ -5,6 +5,8 @@ use grammers_client::grammers_tl_types as tl;
 //
 
 pub trait ChatIdTrait {
+    /// Gets the associated chat ID, or whatever passes as a chat ID for the peer entity.
+    /// Could be [None] for [tl::types::MessageEmpty]
     fn chat_id(&self) -> Option<i64>;
 }
 

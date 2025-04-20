@@ -65,6 +65,7 @@ async fn main() -> Result<()> {
         .context("Failed to load config file")?;
 
     // Get API credentials from config
+    // TODO: Hardcode api/hash/addr?
     let api_id: i32 = settings
         .get("tg_api_id")
         .context("tg_api_id not found in config")?;
@@ -163,6 +164,7 @@ async fn main() -> Result<()> {
                             to_pretty_summary(&wrapper.message, &chats)
                         );
 
+                        // TODO: Do not redownload media if not edited
                         let media_rel_path =
                             try_download_media_raw(&media_path, &wrapper.message, &client)
                                 .await
@@ -302,6 +304,7 @@ async fn try_download_media_raw(
     let rel_path = format!("{chat_name}/{file_name}");
     log::info!("Attempting to download media to: {}", rel_path);
     if file_path.exists() {
+        // TODO: Skip if check sums match
         log::info!("File already exists, overwriting: {}", rel_path);
     }
 

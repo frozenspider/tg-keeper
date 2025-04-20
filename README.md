@@ -8,12 +8,11 @@ tg-keeper is a read-only client, it never attempts to send or modify messages, o
 
 ## Features
 
-- **Message Archiving**: Stores all incoming and edited messages in their serialized form
+- **Message Archiving**: Stores all incoming and edited messages (private and group) in their serialized form
 - **Media Download**: Automatically downloads and saves media files from messages
 - **Chat Caching**: Maintains an up-to-date cache of chat information
 - **Deleted Message Tracking**: Records when messages are deleted
-- **Persistent Authentication**: Uses session files to maintain authentication between runs. This however randomly
-  breaks sometimes, exact cause is unknown. 
+- **Persistent Authentication**: Uses session files to maintain authentication between runs.
 
 ## Details
 
