@@ -262,11 +262,11 @@ async fn try_download_media_raw(
     let chat_id = raw_message.chat_id().unwrap();
 
     // Determine file extension based on media type
-    let ext = match media {
-        Media::Photo(ref _p) => "jpg".to_owned(),
+    let ext = match &media {
+        Media::Photo(_p) => "jpg".to_owned(),
         Media::Sticker(s) if s.is_animated() => "tgs".to_owned(),
         Media::Sticker(_) => "webp".to_owned(),
-        Media::Document(ref doc) => {
+        Media::Document(doc) => {
             let name = doc.name();
             let ext_option = if !name.is_empty() {
                 Path::new(name).extension().and_then(|s| s.to_str())
