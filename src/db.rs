@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use grammers_client::grammers_tl_types::{self as tl, Deserializable, Serializable};
 use grammers_client::{types, ChatMap};
 use rusqlite::{params, types::Null, Connection};
+use rusqlite_migration::{Migrations, M};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -15,17 +16,9 @@ const TYPE_MESSAGE_NEW: &str = "message_new";
 const TYPE_MESSAGE_EDITED: &str = "message_edited";
 const TYPE_MESSAGE_DELETED: &str = "message_deleted";
 
-const SQL_INSERT: &str =
-    "INSERT INTO events (chat_id, message_id, date, type, serialized, media_rel_path) \
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
-impl Database {
-    pub fn new(db_file: &Path) -> Result<Self> {
-        let conn = Connection::open(db_file).context("Failed to open database connection")?;
-
-        // Create tables if they don't exist
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS events (
+const MIGRATION_SLICE: &[M<'_>] = &[
+    M::up("CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY,
                 chat_id INTEGER,
                 message_id INTEGER NOT NULL,
@@ -33,20 +26,24 @@ impl Database {
                 type TEXT NOT NULL,
                 serialized BLOB,
                 media_rel_path TEXT
-            )",
-            [],
-        )
-        .context("Failed to create events table")?;
-
-        // Create chats table if it doesn't exist
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS chats (
+            )"),
+    M::up("CREATE TABLE IF NOT EXISTS chats (
                 chat_id INTEGER PRIMARY KEY,
                 serialized BLOB NOT NULL
-            )",
-            [],
-        )
-        .context("Failed to create chats table")?;
+            )"),
+    M::up("ALTER TABLE events ADD thumbnail_rel_path TEXT;"),
+];
+const MIGRATIONS: Migrations<'_> = Migrations::from_slice(MIGRATION_SLICE);
+
+const SQL_INSERT: &str =
+    "INSERT INTO events (chat_id, message_id, date, type, serialized, media_rel_path, thumbnail_rel_path) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+
+impl Database {
+    pub fn new(db_file: &Path) -> Result<Self> {
+        let mut conn = Connection::open(db_file).context("Failed to open database connection")?;
+
+        MIGRATIONS.to_latest(&mut conn).context("Failed to apply migrations")?;
 
         // Load chats from database
         let mut chats = HashMap::new();
@@ -78,7 +75,7 @@ impl Database {
         &mut self,
         raw_message: &tl::enums::Message,
         is_edited: bool,
-        media_rel_path: Option<String>,
+        media: Option<DownloadedMedia>,
     ) -> Result<()> {
         let serialized = raw_message.to_bytes();
 
@@ -99,7 +96,8 @@ impl Database {
                     date,
                     event_type,
                     serialized,
-                    media_rel_path
+                    media.as_ref().map(|m| m.media_rel_path.as_str()),
+                    media.as_ref().and_then(|m| m.thumbnail_rel_path.as_deref()),
                 ],
             )
             .context("Failed to save message to database")?;
@@ -112,7 +110,7 @@ impl Database {
         for id in message_id {
             tx.execute(
                 SQL_INSERT,
-                params![Null, id, Null, TYPE_MESSAGE_DELETED, Null, Null],
+                params![Null, id, Null, TYPE_MESSAGE_DELETED, Null, Null, Null],
             )
             .context("Failed to save message deleted to database")?;
         }

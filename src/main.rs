@@ -2,11 +2,11 @@ mod db;
 mod utils;
 
 use crate::utils::*;
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use config::Config as AppConfig;
 use grammers_client::types::Media;
-use grammers_client::{grammers_tl_types as tl, types};
 use grammers_client::{Client, Config, InitParams};
+use grammers_client::{grammers_tl_types as tl, types};
 use grammers_mtsender::{FixedReconnect, ServerAddr};
 use grammers_session::Session;
 use std::collections::HashMap;
@@ -150,15 +150,11 @@ async fn main() -> Result<()> {
                             to_pretty_summary(&wrapper.message, &chats)
                         );
 
-                        let media_rel_path =
-                            try_download_media_raw(&media_path, &wrapper.message, &client)
-                                .await
-                                .unwrap_or_else(|e| {
-                                    log::error!("Failed to download media: {}", e);
-                                    None
-                                });
+                        let media = download_media_raw(&media_path, &wrapper.message, &client)
+                            .await
+                            .expect("Failed to download media");
 
-                        database.save_message(&wrapper.message, false, media_rel_path)?;
+                        database.save_message(&wrapper.message, false, media)?;
                     }
                     tl::enums::Update::EditMessage(wrapper) => {
                         log::info!(
@@ -167,15 +163,11 @@ async fn main() -> Result<()> {
                         );
 
                         // TODO: Do not redownload media if not edited
-                        let media_rel_path =
-                            try_download_media_raw(&media_path, &wrapper.message, &client)
-                                .await
-                                .unwrap_or_else(|e| {
-                                    log::error!("Failed to download media: {}", e);
-                                    None
-                                });
+                        let media = download_media_raw(&media_path, &wrapper.message, &client)
+                            .await
+                            .expect("Failed to download media");
 
-                        database.save_message(&wrapper.message, true, media_rel_path)?;
+                        database.save_message(&wrapper.message, true, media)?;
                     }
                     tl::enums::Update::DeleteMessages(wrapper) => {
                         log::info!("Message(s) deleted: {:?}", wrapper.messages);
@@ -203,29 +195,32 @@ async fn main() -> Result<()> {
         ctrlc::set_handler(move || {
             log::info!("Received Ctrl+C, stopping...");
             interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
-            let spawned = spawned.lock().unwrap();
-            if let Some(ref spawned) = *spawned {
+            let spawned_lock = spawned.lock().unwrap();
+            if let Some(ref spawned) = *spawned_lock {
                 spawned.abort();
             }
         })?;
     }
 
+    // Wait for the spawned task to finish
     // Have to resort to busy loop here :(
     let awaited = loop {
-        // Wait for the spawned task to finish
-        let mut spawned = spawned.lock().unwrap();
+        let finished = {
+            let mut spawned_lock = spawned.lock().unwrap();
 
-        if spawned
-            .as_ref()
-            .is_some_and(|ref spawned| spawned.is_finished())
-        {
-            let spawned = spawned.take().unwrap();
-            let awaited = spawned.await;
-            break awaited;
+            // Take out the spawned task if it's finished
+            if spawned_lock.as_ref().is_some_and(|s| s.is_finished()) {
+                spawned_lock.take()
+            } else {
+                None
+            }
+        };
+
+        if let Some(finished) = finished {
+            break finished.await;
         }
-        drop(spawned);
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     };
 
     client.session().save_to_file(&session_file)?;
@@ -242,11 +237,11 @@ async fn main() -> Result<()> {
 
 /// Download media from raw message with the correct extension.
 /// Returns the relative path to the downloaded file.
-async fn try_download_media_raw(
+async fn download_media_raw(
     media_path: &Path,
     raw_message: &tl::enums::Message,
     client: &Client,
-) -> Result<Option<String>> {
+) -> Result<Option<DownloadedMedia>> {
     use tl::enums::*;
 
     let msg_id = raw_message.id();
@@ -264,10 +259,21 @@ async fn try_download_media_raw(
     let chat_id = raw_message.chat_id().unwrap();
 
     // Determine file extension based on media type
-    let ext = match &media {
-        Media::Photo(_p) => "jpg".to_owned(),
-        Media::Sticker(s) if s.is_animated() => "tgs".to_owned(),
-        Media::Sticker(_) => "webp".to_owned(),
+    let (media_ext, media_dl, thumb_dl): (
+        String,
+        DownloadableWrapper,
+        Option<DownloadableWrapper>,
+    ) = match media {
+        Media::Photo(p) => ("jpg".to_owned(), DownloadableWrapper::new(p), None),
+        Media::Sticker(s) => {
+            let ext = if s.is_animated() { "tgs" } else { "webp" };
+            let thumbs = s.document.thumbs();
+            (
+                ext.to_owned(),
+                DownloadableWrapper::new(s.document),
+                pick_largest(thumbs).map(DownloadableWrapper::new),
+            )
+        }
         Media::Document(doc) => {
             let name = doc.name();
             let ext_option = if !name.is_empty() {
@@ -275,16 +281,26 @@ async fn try_download_media_raw(
             } else {
                 None
             };
-            if let Some(ext) = ext_option {
+            let ext = if let Some(ext) = ext_option {
                 ext.to_owned()
             } else {
                 doc.mime_type()
                     .and_then(mime2ext::mime2ext)
                     .unwrap_or("bin")
                     .to_owned()
-            }
+            };
+            let thumbs = doc.thumbs();
+            (
+                ext,
+                DownloadableWrapper::new(doc),
+                pick_largest(thumbs).map(DownloadableWrapper::new),
+            )
         }
-        Media::Contact(_) => "vcf".to_owned(),
+        Media::Contact(_) => (
+            "vcf".to_owned(),
+            DownloadableWrapper::new(NotDownloadable),
+            None,
+        ),
         Media::Poll(_)
         | Media::Geo(_)
         | Media::GeoLive(_)
@@ -296,25 +312,57 @@ async fn try_download_media_raw(
         }
         media => unreachable!("Unexpected media type: {:?}", media),
     };
-    let file_name = format!("{msg_id}.{ext}");
+    let file_name = format!("{msg_id}.{media_ext}");
 
     // Get chat info for the filename
     let chat_name = format!("chat_{chat_id}");
 
-    // Create filename with date, chat name, message ID, and correct extension
-    let file_path = media_path.join(&chat_name).join(&file_name);
-    fs::create_dir_all(file_path.parent().unwrap())?;
-    let rel_path = format!("{chat_name}/{file_name}");
-    log::info!("Attempting to download media to: {}", rel_path);
-    if file_path.exists() {
+    let media_rel_path = {
+        let media_rel_path = format!("{chat_name}/{file_name}");
+        download_media_in_background(client, media_path, media_dl, &media_rel_path)?;
+        media_rel_path
+    };
+
+    let thumbnail_rel_path = if let Some(thumb_dl) = thumb_dl {
+        let thumb_file_name = format!("{file_name}_thumb.jpg");
+        let thumb_rel_path = format!("{chat_name}/{thumb_file_name}");
+        download_media_in_background(client, media_path, thumb_dl, &thumb_rel_path)?;
+        Some(thumb_rel_path)
+    } else {
+        None
+    };
+
+    Ok(Some(DownloadedMedia {
+        media_rel_path,
+        thumbnail_rel_path,
+    }))
+}
+
+fn download_media_in_background(
+    client: &Client,
+    media_root_path: &Path,
+    media_dl: DownloadableWrapper,
+    rel_path: &str,
+) -> Result<()> {
+    let absolute_path = media_root_path.join(rel_path);
+    fs::create_dir_all(absolute_path.parent().unwrap())?;
+
+    log::info!("Attempting to download media to {rel_path}");
+    if absolute_path.exists() {
         // TODO: Skip if check sums match
-        log::info!("File already exists, overwriting: {}", rel_path);
+        log::info!("File already exists, overwriting: {rel_path}");
     }
 
-    // Download the media
-    client.download_media(&media, &file_path).await?;
-    log::info!("Successfully downloaded media to: {}", rel_path);
-    Ok(Some(rel_path))
+    let client = client.clone();
+    let rel_path = rel_path.to_owned();
+    tokio::spawn(async move {
+        match client.download_media(&media_dl, &absolute_path).await {
+            Ok(_) => log::info!("Successfully downloaded {rel_path}"),
+            Err(e) => log::error!("Failed to download media {rel_path}: {}", e),
+        }
+    });
+
+    Ok(())
 }
 
 fn to_pretty_summary(msg: &tl::enums::Message, chat_map: &HashMap<i64, types::Chat>) -> String {

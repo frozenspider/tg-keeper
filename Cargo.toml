@@ -13,7 +13,9 @@ env_logger = "0.10"
 log = "0.4"
 config = "0.13"
 mime2ext = "0.1"
-rusqlite = { version = "0.30", features = ["bundled", "serde_json"] }
 ctrlc = "3.4.6"
 rpassword = "7.3.1"
 futures = "0.3.31"
+
+rusqlite = { version = "0.35", features = ["bundled", "serde_json"] }
+rusqlite_migration = "2.1.0"
