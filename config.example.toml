@@ -6,3 +6,4 @@ tg_address = "1.2.3.4:443" # Replace with your server address
 
 # Your phone number in international format (e.g. "+1234567890")
 tg_phone = "+1234567890"
+tg_2fa_password = "your_2fa_password" # Optional; replace with your 2FA password if you have one

@@ -114,7 +114,9 @@ async fn main() -> Result<()> {
             Ok(user) => user,
             Err(grammers_client::client::auth::SignInError::PasswordRequired(password_token)) => {
                 log::info!("2FA is required");
-                let password = rpassword::prompt_password("Enter your 2FA password: ")?;
+                let password: String = settings
+                    .get("tg_2fa_password")
+                    .context("tg_2fa_password not found in config.toml")?;
                 client.check_password(password_token, password).await?
             }
             Err(e) => return Err(e).context("Sign in failed"),
