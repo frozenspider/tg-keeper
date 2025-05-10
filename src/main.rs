@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
         log::info!("Not logged in, sending code request...");
         log::info!("Using phone number from config: {}", phone);
         let token = client.request_login_code(&phone).await?;
-        let code = rpassword::prompt_password("Enter the code you received: ")?;
+        let code = prompt_password("Enter the code you received: ")?;
 
         let user = match client.sign_in(&token, &code).await {
             Ok(user) => user,

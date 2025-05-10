@@ -1,4 +1,27 @@
 use grammers_client::grammers_tl_types as tl;
+use std::io::Write;
+
+/// Wrapper around `rpassword::prompt_password` to work
+/// around the issue of not being able to access `/dev/tty`
+/// (happens in JetBrains debug).
+pub fn prompt_password(prompt: impl ToString) -> std::io::Result<String> {
+    let prompt = prompt.to_string();
+    match rpassword::prompt_password(&prompt) {
+        Err(e)
+            if e.to_string()
+                .to_lowercase()
+                .contains("device not configured") =>
+        {
+            // Error accessing /dev/tty, use stdin instead
+            print!("{prompt}");
+            std::io::stdout().flush()?;
+            let mut password = String::new();
+            std::io::stdin().read_line(&mut password)?;
+            Ok(password.trim().to_string())
+        }
+        etc => etc,
+    }
+}
 
 //
 // ChatIdTrait
