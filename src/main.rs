@@ -7,7 +7,7 @@ use config::Config as AppConfig;
 use grammers_client::types::Media;
 use grammers_client::{Client, Config, InitParams};
 use grammers_client::{grammers_tl_types as tl, types};
-use grammers_mtsender::{FixedReconnect, ServerAddr};
+use grammers_mtsender::{FixedReconnect, InvocationError, ServerAddr};
 use grammers_session::Session;
 use std::collections::HashMap;
 use std::fs;
@@ -37,7 +37,7 @@ static RECONNECTION_POLICY: FixedReconnect = FixedReconnect {
 async fn main() -> Result<()> {
     // Initialize logging
     env_logger::init_from_env(
-        env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
+        env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "debug"),
     );
 
     log::info!("Starting tg-keeper v{VERSION}");
@@ -140,7 +140,18 @@ async fn main() -> Result<()> {
         log::info!("Watching for updates...");
         tokio::spawn(async move {
             while !interrupted.load(std::sync::atomic::Ordering::SeqCst) {
-                let (update, chats) = client.next_raw_update().await?;
+                let (update, chats) = match client.next_raw_update().await {
+                    Ok(v) => v,
+                    Err(e) => match e {
+                        InvocationError::Rpc(e) if e.code == -500 => {
+                            // "No workers running", this is a temporary issue with Telegram servers
+                            log::warn!("Temporary issue with Telegram servers, retrying...");
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            continue;
+                        }
+                        e => return Err(e).context("Failed to get next raw update"),
+                    }
+                };
                 let chats = database.update_chats(&chats)?;
 
                 match update {
