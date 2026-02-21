@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
                 let (update, chats) = match client.next_raw_update().await {
                     Ok(v) => v,
                     Err(e) => match e {
-                        InvocationError::Rpc(e) if e.code == -500 => {
+                        InvocationError::Rpc(e) if e.code == -500 || e.code == 500 => {
                             // "No workers running", this is a temporary issue with Telegram servers
                             log::warn!("Temporary issue with Telegram servers, retrying...");
                             tokio::time::sleep(Duration::from_secs(5)).await;
