@@ -277,7 +277,11 @@ async fn download_media_raw(
     ) = match media {
         Media::Photo(p) => ("jpg".to_owned(), DownloadableWrapper::new(p), None),
         Media::Sticker(s) => {
-            let ext = if s.is_animated() { "tgs" } else { "webp" };
+            let ext = if s.is_animated() {
+                "tgs"
+            } else {
+                guess_extension(s.document.mime_type(), "webp")
+            };
             let thumbs = s.document.thumbs();
             (
                 ext.to_owned(),
@@ -293,16 +297,13 @@ async fn download_media_raw(
                 None
             };
             let ext = if let Some(ext) = ext_option {
-                ext.to_owned()
+                ext
             } else {
-                doc.mime_type()
-                    .and_then(mime2ext::mime2ext)
-                    .unwrap_or("bin")
-                    .to_owned()
+                guess_extension(doc.mime_type(), "bin")
             };
             let thumbs = doc.thumbs();
             (
-                ext,
+                ext.to_owned(),
                 DownloadableWrapper::new(doc),
                 pick_largest(thumbs).map(DownloadableWrapper::new),
             )
@@ -430,4 +431,8 @@ fn to_pretty_summary(msg: &tl::enums::Message, chat_map: &HashMap<i64, types::Ch
 
     // Format the summary for text messages
     format!("{chat_name} (#{chat_id}): {first_line}")
+}
+
+fn guess_extension<'a>(mime_type_opt: Option<&'a str>, default: &'a str) -> &'a str {
+    mime_type_opt.and_then(mime2ext::mime2ext).unwrap_or(default)
 }
